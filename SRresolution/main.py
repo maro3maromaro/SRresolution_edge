@@ -1,80 +1,106 @@
 # ================================================================
-# train.py  (学習ループ)
+# main.py  (エントリーポイント: 学習 + 評価 ワンコマンド実行)
 # ================================================================
-#  Trainer クラスは以下の役割：
-#    1. バッチ単位で forward → 損失を計算
-#    2. Mixed‑Precision (fp16) で backward / optimizer step
-#    3. 100 ステップおきに進捗をプリント
-#    4. 各エポック終了時にモデル重みを保存
+#  使い方:
+#     $ python main.py                # config.py に従って学習 + 検証
+#     $ python main.py --algo srmd    # アルゴリズムのみ上書き
 # ------------------------------------------------
-#  総合損失 L_total = L1 + 0.1*(1‑SSIM) + 0.05*EdgeLoss + 0.5*CDLoss
-# ------------------------------------------------
+#  動作概要:
+#     1. config.py からパス & パラメータ読込
+#     2. 学習用 (dirA/dirB) と検証用 (dirC) を DataLoader 化
+#     3. Trainer で所定エポック学習
+#     4. 学習後に検証セットで PSNR / SSIM / CDLoss を計算
+# ================================================================
 
+import argparse
 from pathlib import Path
+
 import torch
-from torch import nn
-from torchmetrics.image import StructuralSimilarityIndexMeasure
+from torch.utils.data import DataLoader
+from torchmetrics.functional import peak_signal_noise_ratio as psnr
+from torchmetrics.functional import structural_similarity_index_measure as ssim
 
-from utils import EdgeLoss, CDLoss
+import config
+from utils import SEMPatchDataset, seed_everything, CDLoss
+from train import Trainer
+from model import build_model
 
-class Trainer:
-    """超解像モデルの学習管理クラス"""
+# ------------------------------------------------------------
+# 引数パーサ
+# ------------------------------------------------------------
 
-    def __init__(self, model, loader, device: str, save_dir: Path,
-                 epochs: int = 50, lr: float = 2e-4):
-        # ===== オブジェクト保持 =====
-        self.model    = model
-        self.loader   = loader
-        self.device   = device
-        self.save_dir = Path(save_dir)
-        self.epochs   = epochs
+def parse_args():
+    p = argparse.ArgumentParser(description='CD‑SEM 超解像：学習 + 検証')
+    p.add_argument('--algo', default=config.ALGO, choices=config.ALGO_LIST,
+                   help='使用アルゴリズム (config.py で一覧定義)')
+    return p.parse_args()
 
-        # --- Optimizer (AdamW) ---
-        self.optim = torch.optim.AdamW(self.model.parameters(), lr=lr, betas=(0.9, 0.99))
+# ------------------------------------------------------------
+# 検証関数
+# ------------------------------------------------------------
 
-        # --- 損失関数セット ---
-        self.l1        = nn.L1Loss()                                    # 画素 L1
-        self.ssim      = StructuralSimilarityIndexMeasure(data_range=2.)# SSIM
-        self.edge_loss = EdgeLoss()                                     # Canny/Sobel Edge
-        self.cd_loss   = CDLoss()                                       # CD 寸法誤差
+def evaluate(model: torch.nn.Module, loader: DataLoader, device: str):
+    model.eval()
+    cd_metric = CDLoss().to(device)
+    psnr_sum = ssim_sum = cd_sum = 0.0
+    with torch.no_grad():
+        for lr, hr in loader:
+            lr, hr = lr.to(device), hr.to(device)
+            sr = model(lr)
+            psnr_sum += psnr(sr, hr, data_range=2.).item()
+            ssim_sum += ssim(sr, hr, data_range=2., reduction='elementwise_mean').item()
+            cd_sum   += cd_metric(sr, hr).item()
+    n = len(loader)
+    return psnr_sum/n, ssim_sum/n, cd_sum/n
 
-        # --- fp16 スケーラ ---
-        self.scaler = torch.cuda.amp.GradScaler()
+# ------------------------------------------------------------
+# メイン関数
+# ------------------------------------------------------------
 
-    # ------------------------------------------------------------
-    # 内部：総合損失計算
-    # ------------------------------------------------------------
-    def _loss(self, sr, hr):
-        l1   = self.l1(sr, hr)
-        ssim = 1.0 - self.ssim(sr, hr)
-        edge = self.edge_loss(sr, hr)
-        cd   = self.cd_loss(sr, hr)
-        return l1 + 0.1*ssim + 0.05*edge + 0.5*cd
+def main():
+    args = parse_args()
+    seed_everything(42)
 
-    # ------------------------------------------------------------
-    # 公開：学習開始
-    # ------------------------------------------------------------
-    def train(self):
-        self.model.train()
-        for epoch in range(1, self.epochs + 1):
-            for step, (lr_img, hr_img) in enumerate(self.loader, start=1):
-                lr_img, hr_img = lr_img.to(self.device), hr_img.to(self.device)
+    # ---------------- Dataset / DataLoader ----------------
+    train_ds = SEMPatchDataset(low_dir=config.TRAIN_LOW_DIR,
+                               high_dir=config.TRAIN_HIGH_DIR,
+                               flat_path=config.FLAT_PATH,
+                               dark_path=None,
+                               patch=config.PATCH_SIZE,
+                               stride=config.STRIDE)
 
-                # ---- forward & loss (fp16) ----
-                with torch.cuda.amp.autocast():
-                    sr   = self.model(lr_img)
-                    loss = self._loss(sr, hr_img)
+    val_ds   = SEMPatchDataset(low_dir=config.VAL_LOW_DIR,
+                               high_dir=config.VAL_HIGH_DIR,
+                               flat_path=config.FLAT_PATH,
+                               dark_path=None,
+                               patch=config.PATCH_SIZE,
+                               stride=config.STRIDE)
 
-                # ---- backward ----
-                self.optim.zero_grad()
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optim)
-                self.scaler.update()
+    train_loader = DataLoader(train_ds, batch_size=config.BATCH_SIZE,
+                              shuffle=True, num_workers=4, pin_memory=True)
 
-                if step % 100 == 0:
-                    print(f"Epoch {epoch:03d} Step {step:05d} Loss {loss.item():.4f}")
+    val_loader   = DataLoader(val_ds, batch_size=config.BATCH_SIZE,
+                              shuffle=False, num_workers=4, pin_memory=True)
 
-            # === save ===
-            save_path = self.save_dir / f'epoch_{epoch:03d}.pth'
-            torch.save(self.model.state_dict(), save_path)
-            print(f"[Save] → {save_path}")
+    # ---------------- モデル & Trainer ----------------
+    model = build_model(args.algo).to(config.DEVICE)
+    save_root = Path('runs') / args.algo
+    save_root.mkdir(parents=True, exist_ok=True)
+
+    trainer = Trainer(model, train_loader, device=config.DEVICE,
+                      save_dir=save_root, epochs=config.EPOCHS,
+                      lr=config.LEARNING_RATE)
+
+    # ---------------- 学習 ----------------
+    print('==> Training start')
+    trainer.train()
+
+    # ---------------- 検証 ----------------
+    print('==> Evaluation start')
+    p,s,c = evaluate(model, val_loader, config.DEVICE)
+    print(f'Validation PSNR  : {p:.2f} dB')
+    print(f'Validation SSIM  : {s:.4f}')
+    print(f'Validation CDLoss: {c:.6f}')
+
+if __name__ == '__main__':
+    main()

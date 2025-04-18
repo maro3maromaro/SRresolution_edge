@@ -1,26 +1,31 @@
 # ================================================================
-# config.py  (実験共通設定)
+# config.py  (共通設定ファイル)  ★2025‑04 修正版★
 # ================================================================
-#  学習エポック数・バッチサイズ・データパスなど、
-#  複数スクリプトで共有したい定数をまとめて管理します。
-#  main.py では argparse のデフォルト値として import して使用できます。
-# ================================================================
-
 from pathlib import Path
 
-# ---------------- データパス ----------------
-DATA_ROOT   = Path('data')
-LOW_DIR     = DATA_ROOT / 'low_jpg'   # 1‑scan 画像
-HIGH_DIR    = DATA_ROOT / 'high_jpg'  # 16‑scan 画像
-DARK_PATH   = Path('dark.tif')        # ダーク画像
-FLAT_PATH   = Path('flat.tif')        # フラット画像
+# ---------------- ディレクトリ設定 ----------------
+# 低画質 (LR) 学習データ : dirA
+TRAIN_LOW_DIR  = Path('dirA')
+# 高画質 (HR) 学習データ : dirB
+TRAIN_HIGH_DIR = Path('dirB')
 
-# ---------------- 学習ハイパーパラメータ ----------------
-EPOCHS      = 30     # 総エポック数
-BATCH_SIZE  = 16     # バッチサイズ
-PATCH_SIZE  = 256    # パッチサイズ (px)
-STRIDE      = 64     # パッチ抽出ストライド
-LEARNING_RATE = 2e-4 # AdamW 初期学習率
+# 検証用ペア (1024 枚)
+VAL_LOW_DIR    = Path('dirC/lr')   # 低画質検証
+VAL_HIGH_DIR   = Path('dirC/hr')   # 高画質検証
 
-# ---------------- デバイス ----------------
-DEVICE      = 'cuda'  # 'cpu' / 'cuda' / 'cuda:1' など
+# ---------------- 前処理設定 ----------------
+FLAT_PATH      = None   # フラット補正無し
+DARK_PATH      = None   # ダーク補正無し
+FILE_PREFIX    = 'ABC'  # 画像ファイル名が "ABC***.jpg" のみ対象
+
+# ---------------- ハイパーパラメータ ----------------
+EPOCHS         = 50
+BATCH_SIZE     = 16
+PATCH_SIZE     = 256
+STRIDE         = 64
+LEARNING_RATE  = 2e-4
+
+# ----------------デバイス / アルゴリズム ----------------
+DEVICE         = 'cuda'
+ALGO           = 'edgeformer_edsr'
+ALGO_LIST      = ['rdn_edge','edgeformer_edsr','srmd','swinir_light','nafnet']
