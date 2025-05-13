@@ -19,10 +19,19 @@ VAL_HIGH_DIR: Path | list[Path] = Path('dirC/hr')
 FLAT_PATH: Path | None = None
 DARK_PATH: Path | None = None
 FILE_PREFIX: str = 'ABC'
+# ---------------- 画像処理設定 ----------------
+# 学習/検証時に使用する画像の中央領域のサイズ
+CENTRAL_CROP_HEIGHT: int = 800
+"""画像から切り出す中央領域の高さ（ピクセル）。"""
+CENTRAL_CROP_WIDTH: int = 256
+"""画像から切り出す中央領域の幅（ピクセル）。"""
 
 # ---------------- ハイパーパラメータ ----------------
 EPOCHS: int = 50
-BATCH_SIZE: int = 8 # GPUメモリに応じて調整 (例: 16 -> 8)
+BATCH_SIZE: int = 8
+# PATCH_SIZE は CENTRAL_CROP_WIDTH と CENTRAL_CROP_HEIGHT 以下である必要があります。
+# 特に、正方形パッチを想定しているため、min(CENTRAL_CROP_HEIGHT, CENTRAL_CROP_WIDTH) 以下が安全です。
+# 例: CENTRAL_CROP_WIDTH が 256 の場合、PATCH_SIZE は 256 以下。
 PATCH_SIZE: int = 128 # GPUメモリに応じて調整 (例: 256 -> 128)
 LEARNING_RATE: float = 2e-4
 NUM_WORKERS: int = 2 # 環境に応じて調整 (例: 4 -> 2)
